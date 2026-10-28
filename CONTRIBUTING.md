@@ -80,6 +80,17 @@ test_state_file_has_correct_fields[tmux] PASSED
 **Note:** WezTerm tests are slower due to GUI mux-server overhead and worker
 throttling (8 workers vs unlimited for tmux).
 
+### Testing Rex
+
+Rex tests start a disposable server, separate from your running sessions:
+
+```bash
+cargo build
+WORKMUX_TEST_REX=1 tests/venv/bin/pytest tests/test_rex_backend.py
+```
+
+Requires `rex` on `PATH`. Tests skip unless explicitly enabled.
+
 ### Marking tmux-only tests
 
 Some tests only make sense for tmux. Use the marker:

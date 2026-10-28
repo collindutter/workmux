@@ -135,6 +135,7 @@ export default defineConfig({
           items: [
             { label: "kitty", slug: "guide/kitty" },
             { label: "WezTerm", slug: "guide/wezterm" },
+            { label: "Rex", slug: "guide/rex" },
             { label: "Zellij", slug: "guide/zellij" },
           ],
         },

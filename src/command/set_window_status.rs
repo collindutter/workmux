@@ -57,7 +57,10 @@ impl StatusTarget {
             .ok_or_else(|| anyhow::anyhow!("{} is missing", STATUS_TARGET_BACKEND_ENV))?
             .parse::<BackendType>()
             .map_err(anyhow::Error::msg)?;
-        if !matches!(backend, BackendType::Tmux | BackendType::Zellij) {
+        if !matches!(
+            backend,
+            BackendType::Tmux | BackendType::Zellij | BackendType::Rex
+        ) {
             return Err(anyhow::anyhow!(
                 "status targets do not support the {} backend",
                 backend
@@ -249,6 +252,7 @@ struct StatusBackendSignals {
     wezterm: bool,
     zellij: bool,
     kitty: bool,
+    rex: bool,
 }
 
 impl StatusBackendSignals {
@@ -261,11 +265,13 @@ impl StatusBackendSignals {
                 || std::env::var_os("ZELLIJ_PANE_ID").is_some()
                 || std::env::var_os("ZELLIJ_SESSION_NAME").is_some(),
             kitty: std::env::var_os("KITTY_WINDOW_ID").is_some(),
+            rex: std::env::var_os("REX_SESSION").is_some()
+                || std::env::var_os("REX_BLOCK").is_some(),
         }
     }
 
     fn has_any_signal(&self) -> bool {
-        self.workmux_backend || self.tmux || self.wezterm || self.zellij || self.kitty
+        self.workmux_backend || self.tmux || self.wezterm || self.zellij || self.kitty || self.rex
     }
 }
 
@@ -773,6 +779,23 @@ mod tests {
     }
 
     #[test]
+    fn status_target_accepts_rex_identity() {
+        assert_eq!(
+            StatusTarget::from_values(
+                Some("rex".to_string()),
+                Some("unix:///tmp/rex.sock".to_string()),
+                Some("block:123".to_string()),
+            )
+            .unwrap(),
+            Some(StatusTarget {
+                backend: BackendType::Rex,
+                instance: "unix:///tmp/rex.sock".to_string(),
+                pane_id: "block:123".to_string(),
+            })
+        );
+    }
+
+    #[test]
     fn status_target_rejects_partial_identity() {
         assert!(
             StatusTarget::from_values(Some("zellij".to_string()), Some("dev".to_string()), None,)
@@ -1194,6 +1217,18 @@ mod tests {
         assert_eq!(
             status_backend_candidates_for(BackendType::Zellij, &signals),
             vec![BackendType::Zellij]
+        );
+    }
+
+    #[test]
+    fn status_backend_candidates_use_rex_when_signaled() {
+        let signals = StatusBackendSignals {
+            rex: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            status_backend_candidates_for(BackendType::Rex, &signals),
+            vec![BackendType::Rex]
         );
     }
 
