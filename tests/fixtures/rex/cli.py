@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Forward isolated Rex calls, recording navigation or forcing observation races."""
 
 import json
 import os
