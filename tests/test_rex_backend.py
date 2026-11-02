@@ -421,11 +421,13 @@ def observation_pair(p):
     return peer, victim, foreign["session_id"]
 
 
-def observation_fault(p, tmp_path, method, session, action, block=None):
+def observation_fault(p, tmp_path, method, session, action, block=None, process=None):
     path = tmp_path / "rex-fault.json"
     fault = {"method": method, "session_id": session, "action": action}
     if block is not None:
         fault["block_id"] = block
+    if process is not None:
+        fault["process"] = process
     if action == "transport":
         fault["server"] = p.server.replace("rex.sock", "missing.sock")
     path.write_text(json.dumps(fault))
@@ -588,4 +590,60 @@ def test_rex_process_observation_requires_proof_of_exit(
         with pytest.raises(subprocess.CalledProcessError):
             p.wm("status", "observed", "--json")
     assert triggered.exists()
+    assert observation_records(p) == before
+
+
+@pytest.mark.parametrize(
+    "process",
+    [
+        pytest.param(None, id="unavailable"),
+        pytest.param(
+            {
+                "last_exit": None,
+                "foreground": {"pid": 12, "name": "bash", "cwd": "/tmp"},
+            },
+            id="missing-child",
+        ),
+        pytest.param(
+            {"last_exit": None, "child": {"pid": 12, "name": "bash", "cwd": "/tmp"}},
+            id="missing-foreground",
+        ),
+        pytest.param(
+            {
+                "last_exit": None,
+                "child": {"pid": 12, "name": "bash"},
+                "foreground": {"pid": 12, "name": "bash"},
+            },
+            id="missing-cwd",
+        ),
+    ],
+)
+def test_rex_status_hook_preserves_record_with_incomplete_process_snapshot(
+    rex_project, rex_app, tmp_path, process
+):
+    p = rex_project
+    peer, victim, session = observation_pair(p)
+    before = observation_records(p)
+    for key in (
+        "WORKMUX_STATUS_BACKEND",
+        "WORKMUX_STATUS_INSTANCE",
+        "WORKMUX_STATUS_PANE_ID",
+    ):
+        p.env.pop(key)
+    p.env.update(REX_SESSION=session, REX_BLOCK=victim)
+    triggered = observation_fault(
+        p,
+        tmp_path,
+        "com.superlogical.terminal.process",
+        session,
+        "unavailable" if process is None else "process-response",
+        block=victim,
+        process=process,
+    )
+    p.wm("set-window-status", "working", input="")
+    assert triggered.exists()
+    assert observation_records(p) == before
+    status = json.loads(p.wm("status", "observed", "--json"))
+    assert {agent["pane_id"] for agent in status["agents"]} == {peer, victim}
+    p.wm("list", "--all", "--json")
     assert observation_records(p) == before

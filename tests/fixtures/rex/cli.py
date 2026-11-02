@@ -59,6 +59,9 @@ if fault_path and Path(fault_path).exists() and "call" in args:
             )
         elif action == "transport":
             args[args.index("--server") + 1] = fault["server"]
+        elif action == "process-response":
+            print(json.dumps(fault["process"]))
+            sys.exit(0)
         else:
             print(
                 {

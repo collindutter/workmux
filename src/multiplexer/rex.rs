@@ -1061,7 +1061,17 @@ impl Multiplexer for RexBackend {
                 .into_iter()
                 .find(|b| b.block_id == pane_id && b.creator_name == TERMINAL)
             {
-                return self.live_info(&view, &block);
+                let info = self.live_info(&view, &block)?;
+                // Individual snapshots feed status persistence, which must not
+                // replace a healthy process identity with missing-value defaults.
+                if let Some(info) = &info
+                    && (info.pid.is_none()
+                        || info.current_command.as_deref().is_none_or(str::is_empty)
+                        || info.working_dir.as_os_str().is_empty())
+                {
+                    bail!("Rex process details unavailable for block {pane_id:?}");
+                }
+                return Ok(info);
             }
         }
         Ok(None)
