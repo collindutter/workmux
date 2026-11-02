@@ -35,7 +35,12 @@ the worktree; `workmux open` recreates it. `workmux remove` cleans up both.
 
 Install your agent's [status hooks](/guide/status-tracking/) to use
 `workmux status`, `dashboard`, `send`, `capture`, and `wait`.
-Status is stored by Rex server and block ID. Icons are not added to tab labels.
+Workmux stores agent status keyed by Rex server and block ID. Icons are not
+added to tab labels. Rex itself supports native program status through
+[OSC 7501](https://www.superlogical.com/rex/docs/build/program-status), but workmux
+status hooks do not currently report it: hooks may run outside the target pane
+or have their output captured, and Rex's terminal `write` API sends input, not
+terminal output.
 
 ## Limitations
 

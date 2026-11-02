@@ -1005,6 +1005,8 @@ impl Multiplexer for RexBackend {
         self.send_key(pane_id, "Enter")
     }
     fn send_key(&self, pane_id: &str, key: &str) -> Result<()> {
+        // Unlike `rex send-key`, direct block events bypass Rex keybindings.
+        // Dashboard input must reach the program even when Rex binds that key.
         let payload = key_payload(key)?;
         let session = self.pane_session(pane_id)?;
         self.change(
@@ -1032,7 +1034,9 @@ impl Multiplexer for RexBackend {
             self.block_method(&self.pane_session(pane_id)?, pane_id, "clear", json!({}))?;
         Ok(())
     }
-    // Agent state lives in StateStore; Rex has no workmux status-icon UI.
+    // Rex supports OSC 7501 status from terminal OUTPUT, but `write` sends INPUT.
+    // This icon-only API cannot safely report semantic status to a target pane.
+    // Workmux agent state remains in StateStore.
     fn set_status(&self, _: &str, _: &str, _: bool) -> Result<()> {
         Ok(())
     }
@@ -1390,6 +1394,109 @@ mod tests {
         assert_eq!(key_payload("F12").unwrap()["key"], "f12");
         assert!(key_payload("NotAKey").is_err());
         assert!(key_payload("F26").is_err());
+        for (alias, canonical) in [
+            ("Return", "Enter"),
+            ("Esc", "Escape"),
+            ("BSpace", "Backspace"),
+            ("PPage", "PageUp"),
+            ("NPage", "PageDown"),
+            ("ctrl+alt+shift+Left", "C-M-S-Left"),
+        ] {
+            assert_eq!(key_payload(alias).unwrap(), key_payload(canonical).unwrap());
+        }
+        for invalid in ["", "C-", "M-NotAKey", "F0", "F256"] {
+            assert!(key_payload(invalid).is_err(), "{invalid:?}");
+        }
+    }
+
+    /// Called by test_rex_key_events_bypass_bindings with a disposable server
+    /// whose config consumes g and ctrl+x. Never point this at a user's server.
+    #[test]
+    #[ignore = "requires WORKMUX_REX_TEST_SERVER and disposable REX_SESSION"]
+    fn live_key_events_on_isolated_server() -> Result<()> {
+        let server = std::env::var("WORKMUX_REX_TEST_SERVER")?;
+        let session = std::env::var("REX_SESSION")?;
+        let backend = RexBackend::for_server(&server);
+        let directory = tempfile::tempdir()?;
+        let log = directory.path().join("keys");
+        let reader = concat!(
+            "import os,sys,tty\n",
+            "tty.setraw(0)\n",
+            "with open(sys.argv[1], 'wb', buffering=0) as f:\n",
+            " f.write(b'READY')\n",
+            " while True: f.write(os.read(0, 1024))\n",
+        );
+        let created: Created = parse(&backend.cli(&[
+            "run",
+            "-s",
+            &session,
+            "--focus=false",
+            "--json",
+            "--shell=none",
+            "--",
+            "python3",
+            "-c",
+            reader,
+            log.to_str().unwrap(),
+        ])?)?;
+        let pane = created.pane_id()?;
+        struct Cleanup<'a>(&'a RexBackend, String, String);
+        impl Drop for Cleanup<'_> {
+            fn drop(&mut self) {
+                let _ = self
+                    .0
+                    .window_change("session.close_window", (self.1.clone(), self.2.clone()));
+            }
+        }
+        let _cleanup = Cleanup(&backend, session.clone(), created.window_id.unwrap());
+        let wait_for = |expected: &[u8]| {
+            for _ in 0..100 {
+                if std::fs::read(&log).unwrap_or_default() == expected {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert_eq!(std::fs::read(&log).unwrap_or_default(), expected);
+        };
+        wait_for(b"READY");
+        // Native CLI dispatch consumes these keys in Rex's bindings. The same
+        // keys below must instead reach the raw PTY through the backend.
+        backend.cli(&["send-key", "-s", &session, "-b", &pane, "g", "ctrl+x"])?;
+        let mut expected = b"READY".to_vec();
+        for (key, bytes) in [
+            ("g", &b"g"[..]),
+            ("G", b"G"),
+            ("S-g", b"G"),
+            ("C-x", b"\x18"),
+            ("ctrl+c", b"\x03"),
+            ("M-x", b"\x1bx"),
+            ("Enter", b"\r"),
+            ("Return", b"\r"),
+            ("Escape", b"\x1b"),
+            ("Esc", b"\x1b"),
+            ("Tab", b"\t"),
+            ("Space", b" "),
+            ("BSpace", b"\x7f"),
+            ("Left", b"\x1b[D"),
+            ("S-Left", b"\x1b[1;2D"),
+            ("M-S-Left", b"\x1b[1;4D"),
+            ("Home", b"\x1b[H"),
+            ("Delete", b"\x1b[3~"),
+            ("PPage", b"\x1b[5~"),
+            ("NPage", b"\x1b[6~"),
+            ("F12", b"\x1b[24~"),
+            ("!", b"!"),
+            ("é", "é".as_bytes()),
+        ] {
+            backend.send_key(&pane, key)?;
+            expected.extend_from_slice(bytes);
+            wait_for(&expected);
+        }
+        for key in ["NotAKey", "F26", "C-", "M-NotAKey"] {
+            assert!(backend.send_key(&pane, key).is_err(), "{key}");
+        }
+        wait_for(&expected);
+        Ok(())
     }
 
     /// Opt in only against an isolated server with no app attached. The caller

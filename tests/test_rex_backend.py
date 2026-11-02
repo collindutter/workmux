@@ -17,7 +17,7 @@ pytestmark = pytest.mark.skipif(
 
 
 class RexProject:
-    def __init__(self, root: Path, binary: Path, socket_dir: Path):
+    def __init__(self, root: Path, binary: Path, socket_dir: Path, config_text=""):
         self.repo = root / "repo with spaces"
         self.repo.mkdir()
         self.binary = binary
@@ -39,7 +39,7 @@ class RexProject:
         )
         setup_git_repo(self.repo, self.env)
         config = root / "rex.lua"
-        config.write_text("")
+        config.write_text(config_text)
         self.rex(
             "server",
             "start",
@@ -114,10 +114,12 @@ class RexProject:
 
 
 @pytest.fixture
-def rex_project(tmp_path, workmux_exe_path):
+def rex_project(tmp_path, workmux_exe_path, request):
     # macOS Unix sockets cannot use pytest's full temporary directory path.
     with tempfile.TemporaryDirectory(prefix="wm-rex-", dir="/tmp") as directory:
-        project = RexProject(tmp_path, workmux_exe_path, Path(directory))
+        project = RexProject(
+            tmp_path, workmux_exe_path, Path(directory), getattr(request, "param", "")
+        )
         try:
             created = project.new_session("workmux-test")
             project.env.update(
@@ -144,6 +146,112 @@ def rex_app(rex_project, tmp_path):
         PATH=f"{cli_dir}{os.pathsep}{p.env['PATH']}",
     )
     return log
+
+
+@pytest.mark.parametrize(
+    "rex_project",
+    [
+        (
+            'rex.bind("g", function() return true end)\n'
+            'rex.bind("ctrl+x", function() return true end)\n'
+        )
+    ],
+    indirect=True,
+)
+def test_rex_key_events_bypass_bindings(rex_project):
+    p = rex_project
+    env = p.env | {
+        "WORKMUX_REX_TEST_SERVER": p.server,
+        "REX_BLOCK": "stale-block",
+        "REX_WINDOW": "stale-window",
+        "REX_CLIENT": "stale-client",
+    }
+    result = subprocess.run(
+        [
+            "cargo",
+            "test",
+            "--manifest-path",
+            str(Path(__file__).resolve().parents[1] / "Cargo.toml"),
+            "--bin",
+            "workmux",
+            "multiplexer::rex::tests::live_key_events_on_isolated_server",
+            "--",
+            "--ignored",
+            "--exact",
+            "--nocapture",
+        ],
+        cwd=p.repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout
+
+
+def test_rex_program_status_requires_terminal_output(rex_project, tmp_path):
+    p = rex_project
+    received = tmp_path / "terminal-input"
+    reader = (
+        "import os,sys,tty\n"
+        "tty.setraw(0)\n"
+        "with open(sys.argv[1], 'wb', buffering=0) as f:\n"
+        " print('\\x1b]7501;state=working:id=output:app=workmux-audit\\x1b\\\\', "
+        "end='', flush=True)\n"
+        " while True: f.write(os.read(0, 1024))\n"
+    )
+    created = json.loads(
+        p.rex(
+            "run",
+            "-s",
+            p.env["REX_SESSION"],
+            "--focus=false",
+            "--json",
+            "--shell=none",
+            "--",
+            "python3",
+            "-c",
+            reader,
+            str(received),
+        )
+    )
+    block = created["block_ids"][0]
+
+    def records():
+        return json.loads(
+            p.rex(
+                "block",
+                "call",
+                "-s",
+                p.env["REX_SESSION"],
+                "-b",
+                block,
+                "program_status",
+            )
+        )["records"]
+
+    assert poll_until(lambda: len(records()) == 1, timeout=10)
+    assert records()[0]["state"] == "working"
+    assert records()[0]["id"] == "output"
+    # `write` is input: it cannot deliver OSC output to the terminal emulator.
+    sequence = "\x1b]7501;state=done:id=input\x1b\\"
+    p.rex(
+        "block",
+        "call",
+        "-s",
+        p.env["REX_SESSION"],
+        "-b",
+        block,
+        "write",
+        json.dumps({"data": sequence}),
+    )
+    assert poll_until(
+        lambda: received.exists() and received.read_bytes() == sequence.encode(),
+        timeout=10,
+    )
+    assert [(r["id"], r["state"]) for r in records()] == [("output", "working")]
 
 
 def test_rex_add_and_open_select_the_app_window(rex_project, rex_app):
