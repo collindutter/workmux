@@ -1432,6 +1432,8 @@ mod tests {
                 worktree_root: None,
                 lima_vm_name: None,
                 resume_mode: ResumeMode::None,
+                sandbox_supervisor: None,
+                path_prefix: None,
             },
             &crate::config::Config::default(),
             None,
